@@ -8,6 +8,7 @@ import base64
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from garminconnect import Garmin, GarminConnectAuthenticationError, GarminConnectConnectionError, GarminConnectTooManyRequestsError
 
@@ -29,6 +30,7 @@ from garmin_mcp import nutrition
 from garmin_mcp import workout_builders
 from garmin_mcp import courses
 from garmin_mcp import activity_analysis
+from garmin_mcp import all_time_records
 
 
 def is_interactive_terminal() -> bool:
@@ -99,6 +101,8 @@ is_cn = os.getenv("GARMIN_IS_CN", "false").lower() in ("true", "1", "yes")
 # carry. No modules are removed; tools are simply not registered when filtered.
 #   GARMIN_ENABLED_TOOLS  - comma-separated allowlist; if set, ONLY these register
 #   GARMIN_DISABLED_TOOLS - comma-separated denylist; ignored if an allowlist is set
+#   GARMIN_READ_ONLY_TOOLS - comma-separated tools explicitly declared read-only
+#   GARMIN_WRITE_TOOLS - comma-separated non-destructive external write tools
 # Tool names are case-insensitive. Unset = all tools register (default behaviour).
 def _parse_tool_set(value):
     if not value:
@@ -108,6 +112,8 @@ def _parse_tool_set(value):
 
 enabled_tools = _parse_tool_set(os.getenv("GARMIN_ENABLED_TOOLS"))
 disabled_tools = _parse_tool_set(os.getenv("GARMIN_DISABLED_TOOLS"))
+read_only_tools = _parse_tool_set(os.getenv("GARMIN_READ_ONLY_TOOLS"))
+write_tools = _parse_tool_set(os.getenv("GARMIN_WRITE_TOOLS"))
 
 
 _VALID_TRANSPORTS = ("stdio", "streamable-http", "sse")
@@ -181,10 +187,12 @@ class _ToolFilter:
     attribute access (``run``, ``resource``, ...) passes through to the app.
     """
 
-    def __init__(self, app, enabled, disabled):
+    def __init__(self, app, enabled, disabled, read_only=None, write=None):
         self._app = app
         self._enabled = enabled
         self._disabled = disabled
+        self._read_only = read_only or set()
+        self._write = write or set()
         self._seen = set()  # tool names encountered, for typo detection
 
     def _allowed(self, name):
@@ -194,7 +202,6 @@ class _ToolFilter:
         return name not in self._disabled
 
     def tool(self, *args, **kwargs):
-        decorator = self._app.tool(*args, **kwargs)
         # Prefer the explicit registered name if given (@app.tool(name="x")),
         # so the env-var filter matches what the user actually configures.
         explicit = kwargs.get("name") or (
@@ -205,7 +212,28 @@ class _ToolFilter:
             name = explicit or getattr(fn, "__name__", "")
             self._seen.add(name.lower())
             if self._allowed(name):
-                return decorator(fn)
+                tool_kwargs = kwargs
+                if name.lower() in self._read_only:
+                    tool_kwargs = {
+                        **kwargs,
+                        "annotations": ToolAnnotations(
+                            readOnlyHint=True,
+                            destructiveHint=False,
+                            idempotentHint=True,
+                            openWorldHint=True,
+                        ),
+                    }
+                elif name.lower() in self._write:
+                    tool_kwargs = {
+                        **kwargs,
+                        "annotations": ToolAnnotations(
+                            readOnlyHint=False,
+                            destructiveHint=False,
+                            idempotentHint=False,
+                            openWorldHint=True,
+                        ),
+                    }
+                return self._app.tool(*args, **tool_kwargs)(fn)
             return fn  # skip registration; tool never reaches the LLM
 
         return wrapper
@@ -214,6 +242,10 @@ class _ToolFilter:
         """Configured names that never matched a real tool (likely typos)."""
         configured = self._enabled or self._disabled
         return sorted(configured - self._seen)
+
+    def unknown_read_only_names(self):
+        """Configured annotation names that never matched a real tool."""
+        return sorted(self._read_only - self._seen)
 
     def __getattr__(self, item):
         return getattr(self._app, item)
@@ -414,11 +446,18 @@ def main():
     workout_builders.configure(garmin_client)
     courses.configure(garmin_client)
     activity_analysis.configure(garmin_client)
+    all_time_records.configure(garmin_client)
 
     # Create the MCP app, wrapped so the env-var filter can drop tools.
     # host/port only matter for the HTTP transports; stdio ignores them.
-    fastmcp = FastMCP("Garmin Connect v1.0", host=http_host, port=http_port)
-    app = _ToolFilter(fastmcp, enabled_tools, disabled_tools)
+    fastmcp = FastMCP("Garmin Verbindung", host=http_host, port=http_port)
+    app = _ToolFilter(
+        fastmcp,
+        enabled_tools,
+        disabled_tools,
+        read_only_tools,
+        write_tools,
+    )
     if enabled_tools:
         print(f"Tool filter: allowlist of {len(enabled_tools)} tool(s).", file=sys.stderr)
     elif disabled_tools:
@@ -440,6 +479,7 @@ def main():
     app = workout_builders.register_tools(app)
     app = courses.register_tools(app)
     app = activity_analysis.register_tools(app)
+    app = all_time_records.register_tools(app)
 
     # Register resources (workout templates)
     app = workout_templates.register_resources(app)
@@ -449,6 +489,14 @@ def main():
     if unknown:
         print(
             f"Tool filter: warning — name(s) not found and ignored: {', '.join(unknown)}",
+            file=sys.stderr,
+        )
+
+    unknown_read_only = app.unknown_read_only_names()
+    if unknown_read_only:
+        print(
+            "Tool annotations: warning — read-only name(s) not found and ignored: "
+            + ", ".join(unknown_read_only),
             file=sys.stderr,
         )
 

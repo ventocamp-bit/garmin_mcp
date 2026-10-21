@@ -1,0 +1,13 @@
+# Optional override for a Caddy container already attached to n8n_default.
+# Only the authenticated Action facade joins that proxy network; the raw MCP
+# remains reachable solely through garmin-private.
+services:
+  garmin-actions:
+    networks:
+      - garmin-private
+      - caddy-proxy
+
+networks:
+  caddy-proxy:
+    external: true
+    name: n8n_default

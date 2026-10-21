@@ -1,0 +1,96 @@
+name: garmin-mobile-actions
+
+# One source of truth is injected into both containers. The public adapter also
+# verifies that the MCP catalog matches this set exactly before it serves.
+x-read-only-tools: &read-only-tools >-
+  get_all_time_records,get_activities,get_activity,get_activity_split_summaries,get_activity_splits,get_activity_weather,get_body_battery,get_full_name,get_heart_rates_summary,get_hrv_data,get_respiration_summary,get_sleep_summary,get_stats,get_stress_summary,get_training_effect,get_training_readiness,get_training_status,get_unit_system,get_user_summary
+
+services:
+  garmin-mcp:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      GARMINTOKENS: /var/lib/garmin/tokens
+      GARMIN_MCP_TRANSPORT: streamable-http
+      GARMIN_MCP_HOST: 0.0.0.0
+      GARMIN_MCP_PORT: "8000"
+      GARMIN_ENABLED_TOOLS: *read-only-tools
+      GARMIN_READ_ONLY_TOOLS: *read-only-tools
+    volumes:
+      - garmin-tokens:/var/lib/garmin/tokens
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/healthz', timeout=2)"
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - garmin-private
+
+  garmin-actions:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    entrypoint:
+      - garmin-action-api
+    user: "65532:65532"
+    depends_on:
+      garmin-mcp:
+        condition: service_healthy
+    environment:
+      GARMIN_MCP_URL: http://garmin-mcp:8000/mcp
+      GARMIN_ACTION_API_KEY_FILE: /run/secrets/garmin_action_api_key
+      GARMIN_ACTION_EXPECTED_TOOLS: *read-only-tools
+      GARMIN_ACTION_DIRECT_TOOLS: *read-only-tools
+      GARMIN_ACTION_PUBLIC_BASE_URL: ${GARMIN_ACTION_PUBLIC_BASE_URL:?Set the public HTTPS base URL}
+      GARMIN_ACTION_HOST: 0.0.0.0
+      GARMIN_ACTION_PORT: "8080"
+      GARMIN_ACTION_MAX_REQUEST_BYTES: "65536"
+      GARMIN_ACTION_CALL_TIMEOUT_SECONDS: "60"
+      GARMIN_ACTION_MAX_CONCURRENCY: "4"
+      GARMIN_ACTION_ACCESS_LOG: "false"
+    secrets:
+      - garmin_action_api_key
+    ports:
+      # Keep this loopback-only. Put a TLS reverse proxy or managed HTTPS edge
+      # in front; never publish the garmin-mcp service itself.
+      - 127.0.0.1:${GARMIN_ACTION_HOST_PORT:-8080}:8080
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/healthz', timeout=2)"
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - garmin-private
+
+networks:
+  garmin-private:
+    driver: bridge
+
+volumes:
+  garmin-tokens:
+
+secrets:
+  garmin_action_api_key:
+    file: ${GARMIN_ACTION_API_KEY_FILE_PATH:?Set an absolute API-key file path outside the repository}

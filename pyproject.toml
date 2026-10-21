@@ -12,13 +12,16 @@ dependencies = [
     "python-dotenv==1.2.2",
     "garminconnect==0.3.2",
     "requests==2.33.0",
-    "mcp>=1.28.1",
+    "mcp>=1.28.1,<2",
     "fitparse>=1.2.0",
+    "starlette>=0.47.2,<2",
+    "uvicorn>=0.34,<1",
 ]
 
 [project.scripts]
 garmin-mcp = "garmin_mcp:main"
 garmin-mcp-auth = "garmin_mcp.auth_cli:main"
+garmin-action-api = "garmin_mcp.action_api:main"
 
 [tool.uv]
 dev-dependencies = [
