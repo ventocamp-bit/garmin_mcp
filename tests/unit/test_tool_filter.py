@@ -8,6 +8,7 @@ class FakeApp:
 
     def __init__(self):
         self.registered = []
+        self.tool_kwargs = {}
 
     def tool(self, *args, **kwargs):
         explicit = kwargs.get("name") or (
@@ -15,7 +16,9 @@ class FakeApp:
         )
 
         def decorator(fn):
-            self.registered.append(explicit or fn.__name__)
+            name = explicit or fn.__name__
+            self.registered.append(name)
+            self.tool_kwargs[name] = kwargs
             return fn
 
         return decorator
@@ -93,3 +96,54 @@ def test_passthrough_to_wrapped_app():
     app = FakeApp()
     filt = _ToolFilter(app, set(), set())
     assert filt.run() == "ran"
+
+
+def test_explicit_read_only_annotations_are_registered():
+    app = FakeApp()
+    filt = _ToolFilter(app, {"get_a"}, set(), {"get_a"})
+
+    _register(filt, ["get_a"])
+
+    annotations = app.tool_kwargs["get_a"]["annotations"]
+    assert annotations.readOnlyHint is True
+    assert annotations.destructiveHint is False
+    assert annotations.idempotentHint is True
+    assert annotations.openWorldHint is True
+
+
+def test_explicit_write_annotations_are_registered_as_non_destructive():
+    """Catch write tools being omitted or mislabeled as read-only/destructive."""
+    app = FakeApp()
+    filt = _ToolFilter(
+        app,
+        {"upload_workout"},
+        set(),
+        set(),
+        {"upload_workout"},
+    )
+
+    _register(filt, ["upload_workout"])
+
+    annotations = app.tool_kwargs["upload_workout"]["annotations"]
+    assert annotations.readOnlyHint is False
+    assert annotations.destructiveHint is False
+    assert annotations.idempotentHint is False
+    assert annotations.openWorldHint is True
+
+
+def test_unlisted_tools_are_not_marked_read_only():
+    app = FakeApp()
+    filt = _ToolFilter(app, {"get_a"}, set(), set())
+
+    _register(filt, ["get_a"])
+
+    assert "annotations" not in app.tool_kwargs["get_a"]
+
+
+def test_unknown_read_only_names_flags_typos():
+    app = FakeApp()
+    filt = _ToolFilter(app, {"get_a"}, set(), {"get_a", "get_typo"})
+
+    _register(filt, ["get_a"])
+
+    assert filt.unknown_read_only_names() == ["get_typo"]

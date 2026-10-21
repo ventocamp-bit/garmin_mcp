@@ -1,0 +1,26 @@
+# Explicit opt-in for a private owner who has authorized Garmin write access.
+# Supply the inspected catalog and its read-only subset for this exact release.
+services:
+  garmin-mcp:
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      GARMIN_ENABLED_TOOLS: ${GARMIN_FULL_TOOLS:?Set the inspected complete tool catalog}
+      GARMIN_READ_ONLY_TOOLS: ${GARMIN_FULL_READ_TOOLS:?Set the inspected read-only subset}
+      GARMIN_WRITE_TOOLS: ""
+      GARMIN_FIT_CONFIG: /var/lib/garmin/files/.fit-config.json
+    volumes:
+      - garmin-files:/var/lib/garmin/files
+
+  garmin-actions:
+    environment:
+      GARMIN_ACTION_ALLOW_WRITES: "true"
+      GARMIN_ACTION_EXPECTED_TOOLS: ${GARMIN_FULL_TOOLS:?Set the inspected complete tool catalog}
+      GARMIN_ACTION_FILE_ROOT: /var/lib/garmin/files
+    volumes:
+      - garmin-files:/var/lib/garmin/files:ro
+
+volumes:
+  garmin-files:
